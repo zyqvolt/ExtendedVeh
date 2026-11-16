@@ -11,9 +11,10 @@ are at DLL RVAs `B1B6C`, `B1B84`, `B1BEC`, and `B1C2A`. Restoring that byte over
 an inline jump leaves the jump's displacement bytes in the native instruction.
 The DLL's ASLR load address does not change this GTA address.
 
-ExtendedVeh now registers its five-argument reader with RenderWare after RW
-initialization and restores the native reader before RW shutdown. It never
-patches `0x41B1D0`. Normal streams delegate to the original reader; custom DFFs
+ExtendedVeh now registers its five-argument reader with RenderWare only during
+its custom DFF read and restores the native reader immediately afterwards,
+including failed reads. It never patches `0x41B1D0`. Normal SA-MP streams call
+the native reader directly, preserving SA-MP's temporary RET behavior; custom DFFs
 still skip this native reader and load embedded/separate collision through the
 existing collision loader. The standard writer and size callbacks are retained.
 

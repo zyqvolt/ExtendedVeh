@@ -25,7 +25,11 @@ def function(source, name):
 
 assert not re.search(r'MH_(?:Create|Enable|Disable|Remove)Hook\([^;\n]*0x41B1D0', plugin)
 init = plugin[plugin.index('Events::initRwEvent.Add'):plugin.index('Events::shutdownRwEvent.Add')]
-assert 'RegisterClumpCollisionReader(true);' in init
+assert 'RegisterClumpCollisionReader(true);' not in init
+read = plugin.index('RpClump* pClump = s_collisionReaderRegistered ? SafeRpClumpStreamRead(')
+assert plugin.rfind('RegisterClumpCollisionReader(true);', 0, read) > plugin.rfind('s_bLoadingCustomVehicleDff = true;', 0, read)
+restore = plugin.index('RegisterClumpCollisionReader(false);', read)
+assert restore < plugin.index('s_bLoadingCustomVehicleDff = false;', read)
 shutdown = plugin[plugin.index('Events::shutdownRwEvent.Add'):]
 assert 'RegisterClumpCollisionReader(false);' in shutdown
 

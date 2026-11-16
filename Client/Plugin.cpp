@@ -3334,7 +3334,9 @@ private:
 				CommonVehicleTexDictionaryGuard texGuard;
 
 				uint32_t clumpException = 0;
-				RpClump* pClump = SafeRpClumpStreamRead(dffStream, &clumpException);
+				RegisterClumpCollisionReader(true);
+				RpClump* pClump = s_collisionReaderRegistered ? SafeRpClumpStreamRead(dffStream, &clumpException) : nullptr;
+				RegisterClumpCollisionReader(false);
 
 				SetCollisionModel(nullptr);
 				*reinterpret_cast<CBaseModelInfo**>(0x009689E0) = nullptr;
@@ -3507,7 +3509,6 @@ public:
 	{
 		Events::initRwEvent.Add([this]() {
 			if (!m_runtimeInitialized) {
-				RegisterClumpCollisionReader(true);
 				fs::create_directories(GetSampCacheRoot());
 				AudioExtender::InstallHooks();
 				StreamingExtender::InstallHooks();
