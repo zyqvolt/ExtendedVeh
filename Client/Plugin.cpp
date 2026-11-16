@@ -966,15 +966,31 @@ static void __fastcall Hooked_SetComponentVisibility(CVehicle* thisVehicle, void
 }
 
 static bool s_bLoadingCustomVehicleDff = false;
-static RwStream*(__cdecl* g_origClumpCollisionRead)(RwStream* stream, unsigned int length, void* object, int offsetInObject) = nullptr;
+static const auto g_origClumpCollisionRead = reinterpret_cast<RwPluginDataChunkReadCallBack>(0x41B1D0);
+static bool s_collisionReaderRegistered = false;
 
-static RwStream* __cdecl Hooked_ClumpCollisionRead(RwStream* stream, unsigned int length, void* object, int offsetInObject)
+static RwStream* __cdecl Hooked_ClumpCollisionRead(RwStream* stream, RwInt32 length, void* object, RwInt32 offsetInObject, RwInt32 sizeInObject)
 {
 	if (s_bLoadingCustomVehicleDff) {
 		RwStreamSkip(stream, length);
 		return stream;
 	}
-	return g_origClumpCollisionRead ? g_origClumpCollisionRead(stream, length, object, offsetInObject) : stream;
+	return g_origClumpCollisionRead(stream, length, object, offsetInObject, sizeInObject);
+}
+
+static void RegisterClumpCollisionReader(bool install)
+{
+	if (!install && !s_collisionReaderRegistered)
+		return;
+	// SA-MP 0.3.DL temporarily writes RET, then 0x64, at 0x41B1D0. An inline jump
+	// there is corrupted by that restore. Replace the RW callback, not GTA's code.
+	const RwInt32 offset = RpClumpRegisterPluginStream(0x253F2FA,
+		install ? Hooked_ClumpCollisionRead : g_origClumpCollisionRead,
+		reinterpret_cast<RwPluginDataChunkWriteCallBack>(0x41B2F0),
+		reinterpret_cast<RwPluginDataChunkGetSizeCallBack>(0x41B300));
+	s_collisionReaderRegistered = install && offset >= 0;
+	if (offset < 0)
+		ClientLog(LogLevel::Error, "Could not register the clump collision stream reader");
 }
 
 static void(__fastcall* g_origBouncingPanel_ProcessPanel)(CBouncingPanel* thisPanel, void* edx, CVehicle* vehicle, RwFrame* frame, CVector arg2, CVector arg3, float arg4, float arg5) = nullptr;
@@ -2636,8 +2652,12 @@ static GetColModelFn g_origGetColModel = nullptr;
 static CColModel* __fastcall Hooked_GetColModel(CEntity* thisPtr, void* /*edx*/)
 {
 	if (thisPtr && thisPtr->m_nType == ENTITY_TYPE_VEHICLE) {
-		CColModel* customCol = CustomVehicleBindingManager::GetCollisionForVehicle(reinterpret_cast<CVehicle*>(thisPtr));
-		if (customCol && customCol->m_pColData && customCol->m_pColData->m_pLines && customCol->m_pColData->m_nNumLines >= 4) {
+		auto* vehicle = reinterpret_cast<CVehicle*>(thisPtr);
+		// Preserve GTA's per-vehicle collision (hydraulics/moving components).
+		if (static_cast<signed char>(vehicle->m_nSpecialColModel) > -1)
+			return g_origGetColModel ? g_origGetColModel(thisPtr) : nullptr;
+		CColModel* customCol = CustomVehicleBindingManager::GetCollisionForVehicle(vehicle);
+		if (customCol) {
 			return customCol;
 		}
 	}
@@ -3314,7 +3334,9 @@ private:
 				CommonVehicleTexDictionaryGuard texGuard;
 
 				uint32_t clumpException = 0;
-				RpClump* pClump = SafeRpClumpStreamRead(dffStream, &clumpException);
+				RegisterClumpCollisionReader(true);
+				RpClump* pClump = s_collisionReaderRegistered ? SafeRpClumpStreamRead(dffStream, &clumpException) : nullptr;
+				RegisterClumpCollisionReader(false);
 
 				SetCollisionModel(nullptr);
 				*reinterpret_cast<CBaseModelInfo**>(0x009689E0) = nullptr;
@@ -3497,6 +3519,7 @@ public:
 		});
 
 		Events::shutdownRwEvent.Add([this]() {
+			RegisterClumpCollisionReader(false);
 			ModelTransferClient::Instance().CancelAll("client shutdown");
 			ModelTransferClient::Instance().Shutdown();
 			AudioExtender::RestoreHooks();
@@ -5001,19 +5024,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
 		} else {
 			ClientLog(LogLevel::Error, std::format("Failed to hook CBouncingPanel::ProcessPanel (0x6F49A0): {}", MH_StatusToString(bpStatus)));
 		}
-
-		MH_STATUS dffColStatus = MH_CreateHook(reinterpret_cast<void*>(0x41B1D0), reinterpret_cast<void*>(&Hooked_ClumpCollisionRead), reinterpret_cast<void**>(&g_origClumpCollisionRead));
-		if (dffColStatus == MH_OK) {
-			MH_STATUS enableStatus = MH_EnableHook(reinterpret_cast<void*>(0x41B1D0));
-			if (enableStatus == MH_OK) {
-				ClientLog(LogLevel::Info, "ClumpCollisionRead (0x41B1D0) hooked successfully via MinHook");
-			} else {
-				ClientLog(LogLevel::Error, std::format("Failed to enable ClumpCollisionRead hook: {}", MH_StatusToString(enableStatus)));
-			}
-		} else {
-			ClientLog(LogLevel::Error, std::format("Failed to hook ClumpCollisionRead (0x41B1D0): {}", MH_StatusToString(dffColStatus)));
-		}
-
 		MH_STATUS exhStatus = MH_CreateHook(reinterpret_cast<void*>(0x6DE240), reinterpret_cast<void*>(&Hooked_AddExhaustParticles), reinterpret_cast<void**>(&g_origAddExhaustParticles));
 		if (exhStatus == MH_OK) {
 			MH_STATUS enableStatus = MH_EnableHook(reinterpret_cast<void*>(0x6DE240));
@@ -5330,11 +5340,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
 			g_origCVehicle_ProcessDelayedExplosion = nullptr;
 		}
 
-		if (g_origClumpCollisionRead) {
-			MH_DisableHook(reinterpret_cast<void*>(0x41B1D0));
-			MH_RemoveHook(reinterpret_cast<void*>(0x41B1D0));
-			g_origClumpCollisionRead = nullptr;
-		}
+		RegisterClumpCollisionReader(false);
 
 		if (g_origAddExhaustParticles) {
 			MH_DisableHook(reinterpret_cast<void*>(0x6DE240));
